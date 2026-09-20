@@ -1,0 +1,19 @@
+# Sheets to reconcile (the Export sheet is the raw dump and is ignored)
+sheets: ["126"]   # DRIFTER and COMPONENTS are ignored
+comment_column: Comments
+# Fill colours that mark a row as needing work
+shades:
+  FFFF0000: red      # chase ETA / dispatch / BER return
+  FFFFC000: amber    # chase customer purchase order
+# Identifier columns, in search priority order
+identifier_columns:
+  job_no: Job No
+  rfq: RFQ REF
+  order_ref: Customer Order Reference
+  part_no: Component Part Number
+  customer: Customer
+  status: Job Status
+# Only search mail received in the last N days
+search_window_days: 120
+max_emails_per_row: 5
+model: claude-opus-5

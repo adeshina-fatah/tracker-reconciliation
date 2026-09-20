@@ -1,0 +1,12 @@
+openpyxl>=3.1
+pandas>=2.2
+pydantic>=2.7
+anthropic>=0.50
+msal>=1.28
+requests>=2.32
+pypdf>=4.2
+python-dotenv>=1.0
+pyyaml>=6.0
+streamlit>=1.36
+rapidfuzz>=3.9
+pywin32>=306; sys_platform == "win32"
