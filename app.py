@@ -36,7 +36,7 @@ if len(flagged):
 
 st.divider()
 col_a, col_b = st.columns([1, 3])
-dry = col_a.toggle("Dry run (no mailbox, no AI)", value=True)
+dry = col_a.toggle("Dry run only (skips Outlook and AI, just checks the queue)", value=False)
 limit = col_a.number_input("Limit rows (0 = all)", min_value=0, value=0)
 if col_a.button("Run reconciliation", type="primary"):
     log = col_b.empty(); lines = []
@@ -44,7 +44,11 @@ if col_a.button("Run reconciliation", type="primary"):
         lines.append(msg); log.code("\n".join(lines[-15:]))
     with st.spinner("Working..."):
         r = run(str(tmp), cfg, dry_run=dry, limit=limit or None, progress=progress)
-    st.success(f"Done. {len(r['results'])} rows processed.")
+    if dry:
+        st.warning("This was a DRY RUN: Outlook was not searched and no comments were proposed. "
+                   "Switch the dry-run toggle off and run again for real results.")
+    else:
+        st.success(f"Done. {len(r['results'])} rows processed against the mailbox.")
     res = pd.DataFrame(r["results"])
     show = [c for c in ["sheet", "row", "shade", "job_no", "proposed_comment", "proposed_status",
                         "confidence", "evidence", "email_date", "flags"] if c in res.columns]
