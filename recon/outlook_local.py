@@ -14,14 +14,19 @@ class OutlookMail:
     def __init__(self, folder_name: str):
         import pythoncom, win32com.client  # pywin32; imported here so non-Windows machines can import the package
         pythoncom.CoInitialize()          # Streamlit runs us in a worker thread; COM needs this per thread
-        self.folder_name = folder_name
+        self.folder_names = [f.strip() for f in folder_name.split(",") if f.strip()]
+        self.folder_name = self.folder_names[0]
         self._ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        self._folder = None
+        self._folders = None
 
     def login(self, prompt=print) -> None:
         prompt("Using the Outlook session already signed in on this PC.")
-        f = self.folder_id()
-        prompt(f"Found folder: {f.FolderPath}")
+        for f in self.folders():
+            try:
+                n = f.Items.Count
+            except Exception:
+                n = "?"
+            prompt(f"Searching folder: {f.FolderPath} ({n} items)")
 
     @staticmethod
     def _children(folder):
@@ -31,15 +36,23 @@ class OutlookMail:
         except Exception:
             return []
 
+    def folders(self):
+        if self._folders is None:
+            self._folders = [self._find(name) for name in self.folder_names]
+        return self._folders
+
     def folder_id(self):
-        """Locate the folder by name, or by path like 'Mailbox Name/Inbox/Shared'.
+        return self.folders()[0]
+
+    def _find(self, folder_name: str):
+        """Locate one folder by name, or by path like 'Mailbox Name/Inbox/Shared'.
 
         Stores that Outlook cannot open (offline shared mailboxes, archives,
         public folders) are skipped instead of aborting the run.
         """
-        if self._folder is not None:
-            return self._folder
-        parts = [p.strip().lower() for p in self.folder_name.replace("\\", "/").split("/") if p.strip()]
+        if folder_name.strip().lower() == "inbox" and len(folder_name.split("/")) == 1:
+            return self._ns.GetDefaultFolder(6)   # 6 = olFolderInbox of the primary mailbox
+        parts = [p.strip().lower() for p in folder_name.replace("\\", "/").split("/") if p.strip()]
         target = parts[-1]
         seen = []
 
@@ -62,9 +75,8 @@ class OutlookMail:
         hit = walk(self._children(self._ns))
         if hit is None:
             raise LookupError(
-                f"Folder '{self.folder_name}' not found in Outlook. "
+                f"Folder '{folder_name}' not found in Outlook. "
                 f"Folders visible: {sorted(set(seen))[:60]}")
-        self._folder = hit
         return hit
 
     @staticmethod
@@ -78,19 +90,29 @@ class OutlookMail:
     def search(self, term: str, window_days: int, top: int = 5) -> list[dict]:
         since = (datetime.now() - timedelta(days=window_days)).strftime("%m/%d/%Y %H:%M %p")
         t = term.replace("'", "''")
-        dasl = ("@SQL=(\"urn:schemas:httpmail:subject\" LIKE '%{t}%' "
+        full = ("@SQL=(\"urn:schemas:httpmail:subject\" LIKE '%{t}%' "
                 "OR \"urn:schemas:httpmail:textdescription\" LIKE '%{t}%') "
                 "AND \"urn:schemas:httpmail:datereceived\" >= '{since}'").format(t=t, since=since)
-        items = self.folder_id().Items
-        items.Sort("[ReceivedTime]", True)
-        hits = items.Restrict(dasl)
+        subject_only = ("@SQL=\"urn:schemas:httpmail:subject\" LIKE '%{t}%' "
+                        "AND \"urn:schemas:httpmail:datereceived\" >= '{since}'").format(t=t, since=since)
         out = []
-        for it in hits:
-            if getattr(it, "Class", None) != 43:     # 43 = olMail
-                continue
-            out.append({"id": it.EntryID, "subject": it.Subject, "receivedDateTime": it.ReceivedTime.isoformat()})
-            if len(out) >= top: break
-        return out
+        for folder in self.folders():
+            items = folder.Items
+            items.Sort("[ReceivedTime]", True)
+            try:
+                hits = items.Restrict(full)
+            except Exception:
+                hits = items.Restrict(subject_only)   # some stores reject body search
+            n = 0
+            for it in hits:
+                if getattr(it, "Class", None) != 43:     # 43 = olMail
+                    continue
+                out.append({"id": it.EntryID, "subject": it.Subject,
+                            "receivedDateTime": it.ReceivedTime.isoformat(), "folder": folder.FolderPath})
+                n += 1
+                if n >= top: break
+        out.sort(key=lambda m: m["receivedDateTime"], reverse=True)
+        return out[:top]
 
     def fetch(self, message_id: str, with_attachments=True) -> Email:
         m = self._ns.GetItemFromID(message_id)
