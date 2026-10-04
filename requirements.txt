@@ -10,3 +10,4 @@ pyyaml>=6.0
 streamlit>=1.36
 rapidfuzz>=3.9
 pywin32>=306; sys_platform == "win32"
+openai>=1.40

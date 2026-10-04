@@ -1,6 +1,6 @@
 """Turn matched emails into a structured reconciliation proposal with Claude."""
 from __future__ import annotations
-import io, re
+import io, json, os, re
 from typing import Literal
 from pydantic import BaseModel, Field
 import anthropic
@@ -55,13 +55,58 @@ def build_context(item: dict, emails: list) -> str:
     return "\n\n".join(parts)
 
 class Extractor:
+    """Structured extraction via either an OpenAI-compatible endpoint or the Anthropic API.
+
+    .env controls it:
+      LLM_PROVIDER = openai | anthropic        (default: openai if LLM_BASE_URL is set, else anthropic)
+      LLM_BASE_URL = https://host/v1           (OpenAI-compatible server)
+      LLM_API_KEY  = token for that server     (falls back to OPENAI_API_KEY)
+      LLM_MODEL    = model name on that server (overrides config.yaml `model`)
+    """
     def __init__(self, model: str = "claude-opus-5"):
-        self.client = anthropic.Anthropic()   # reads ANTHROPIC_API_KEY
-        self.model = model
+        base_url = os.environ.get("LLM_BASE_URL")
+        self.provider = os.environ.get("LLM_PROVIDER") or ("openai" if base_url else "anthropic")
+        self.model = os.environ.get("LLM_MODEL") or model
+        if self.provider == "openai":
+            from openai import OpenAI
+            key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError("Set LLM_API_KEY in .env for the OpenAI-compatible endpoint")
+            self.client = OpenAI(base_url=base_url, api_key=key, timeout=120)
+        else:
+            import anthropic
+            self.client = anthropic.Anthropic()   # reads ANTHROPIC_API_KEY
 
     def propose(self, item: dict, emails: list) -> Proposal:
+        if self.provider == "openai":
+            return self._propose_openai(item, emails)
         resp = self.client.messages.parse(
             model=self.model, max_tokens=4000, system=SYSTEM,
             messages=[{"role": "user", "content": build_context(item, emails)}],
             output_format=Proposal)
         return resp.parsed_output
+
+    def _propose_openai(self, item: dict, emails: list) -> Proposal:
+        schema = Proposal.model_json_schema()
+        messages = [{"role": "system", "content": SYSTEM + "\nRespond with a single JSON object matching this schema, no prose:\n" + json.dumps(schema)},
+                    {"role": "user", "content": build_context(item, emails)}]
+        try:   # servers that support strict JSON-schema output
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=messages, temperature=0, max_tokens=2000,
+                response_format={"type": "json_schema", "json_schema": {"name": "proposal", "schema": schema}})
+        except Exception:   # fall back to plain JSON mode, then to free text
+            try:
+                resp = self.client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=0, max_tokens=2000,
+                    response_format={"type": "json_object"})
+            except Exception:
+                resp = self.client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=0, max_tokens=2000)
+        text = resp.choices[0].message.content or ""
+        return Proposal.model_validate_json(_extract_json(text))
+
+def _extract_json(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if start >= 0 and end > start else text
