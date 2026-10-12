@@ -65,7 +65,15 @@ def main():
     out = Path(a.out).resolve(); (out / "msg").mkdir(parents=True, exist_ok=True)
     failed_saves = 0
 
-    rows, seen = [], set()
+    rows, seen, skipped = [], set(), []
+
+    def safe_get(obj, attr, default=""):
+        try:
+            v = getattr(obj, attr)
+            return default if v is None else v
+        except Exception:
+            return default
+
     for folder in folders:
         items = folder.Items
         items.Sort("[ReceivedTime]", True)
@@ -74,15 +82,24 @@ def main():
         print(f"Scanning {folder.FolderPath} ...")
         n = 0
         for it in items.Restrict(restrict):
-            if getattr(it, "Class", None) != 43:
+            if safe_get(it, "Class", None) != 43:
                 continue
             n += 1
-            text = f"{it.Subject or ''}\n{it.Body or ''}"
+            subject = safe_get(it, "Subject")
+            try:
+                body = it.Body or ""
+            except Exception as e:          # sync-conflict or corrupt item: Outlook refuses the body
+                body = ""
+                skipped.append((safe_get(it, "ReceivedTime"), subject, str(e)[:80]))
+            text = f"{subject}\n{body}"
             hits = sorted({m.group(0).lower() for m in rx.finditer(text)})
-            if not hits or it.EntryID in seen:
+            entry_id = safe_get(it, "EntryID", None)
+            if not hits or not entry_id or entry_id in seen:
                 continue
-            seen.add(it.EntryID)
-            when = it.ReceivedTime
+            seen.add(entry_id)
+            when = safe_get(it, "ReceivedTime", None)
+            if when is None:
+                continue
             stamp = when.strftime("%Y-%m-%d_%H%M")
             safe = re.sub(r"[^A-Za-z0-9\- ]", "_", (it.Subject or "no subject")).strip(" ._")[:40] or "no_subject"
             fname = f"{stamp} {safe}.msg"
@@ -95,17 +112,22 @@ def main():
                     fname = fname[:-4] + ".txt"
                     try:
                         (out / "msg" / fname).write_text(
-                            f"From: {it.SenderName}\nTo: {it.To}\nCC: {it.CC}\nDate: {it.ReceivedTime}\n"
-                            f"Subject: {it.Subject}\nAttachments: {it.Attachments.Count}\n\n{it.Body or ''}",
+                            f"From: {safe_get(it, 'SenderName')}\nTo: {safe_get(it, 'To')}\nCC: {safe_get(it, 'CC')}\n"
+                            f"Date: {when}\nSubject: {subject}\n\n{body}",
                             encoding="utf-8")
                     except Exception:
                         fname = "(could not save)"
                     failed_saves += 1
-            body = re.sub(r"\s+", " ", it.Body or "")
+            body = re.sub(r"\s+", " ", body)
             first = rx.search(body)
             snippet = body[max(0, first.start() - 150): first.start() + 250] if first else body[:300]
-            rows.append([when.strftime("%Y-%m-%d %H:%M"), folder.Name, it.SenderName, it.To, it.CC,
-                         it.Subject, ", ".join(hits), it.Attachments.Count, snippet, fname if not a.no_msg else ""])
+            try:
+                att_count = it.Attachments.Count
+            except Exception:
+                att_count = ""
+            rows.append([when.strftime("%Y-%m-%d %H:%M"), folder.Name, safe_get(it, "SenderName"),
+                         safe_get(it, "To"), safe_get(it, "CC"), subject, ", ".join(hits), att_count,
+                         snippet, fname if not a.no_msg else ""])
         print(f"  {n} emails in window, {len(rows)} matches so far")
 
     rows.sort(key=lambda r: r[0])
@@ -120,6 +142,11 @@ def main():
     path = out / f"evidence-index-{datetime.now():%Y%m%d-%H%M}.xlsx"
     wb.save(path)
     print(f"\n{len(rows)} matching emails. Index: {path}\nSaved copies: {out / 'msg'}")
+    if skipped:
+        log = out / "skipped-items.txt"
+        log.write_text("\n".join(f"{d} | {s} | {e}" for d, s, e in skipped), encoding="utf-8")
+        print(f"{len(skipped)} item(s) could not be read (Outlook sync conflicts); subjects listed in {log}. "
+              "Open them in Outlook to resolve, then re-run if any look relevant.")
     if failed_saves:
         print(f"{failed_saves} message(s) could not be saved as .msg and were saved as .txt instead")
 
