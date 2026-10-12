@@ -4,3 +4,7 @@ output/
 __pycache__/
 *.pyc
 .venv/
+docs/
+evidence/
+*.msg
+*:Zone.Identifier
