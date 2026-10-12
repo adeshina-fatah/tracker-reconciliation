@@ -17,16 +17,12 @@ import openpyxl
 from openpyxl.styles import Font
 
 DEFAULT_KEYWORDS = [
-    # the subject matter of the charge
-    "stock count", "stock take", "stocktake", "cycle count", "stock discrepanc", "variance", "write-off", "write off",
-    "service exchange", "SX form", "SX store", "SX", "drifter", "adjustment", "issued to job", "returned to stock",
-    "reconcil", "investigation", "root cause", "corrective", "stock control", "bin", "shelv", "labell",
-    # access and control (who else could move stock)
-    "access", "store access", "key", "took", "taken", "borrowed", "without",
-    # workload, capacity and support requests
-    "overtime", "workload", "capacity", "assist", "help", "backlog", "pressure", "deadline", "close of business",
-    "laptop", "no access", "urgent", "by COB", "request",
-    # people named in the matter (edit to match your colleagues)
+    # specific to the charge; generic words removed so ordinary mail does not match
+    "stock count", "stock take", "stocktake", "cycle count", "stock discrepanc", "stock variance", "variance report",
+    "write-off", "write off", "service exchange", "SX form", "SX store", "SX unit", "drifter part", "drifter stock",
+    "stock adjustment", "issued to job", "returned to stock", "reconciliation", "root cause", "corrective action",
+    "stock control", "stock record", "physical count", "count sheet", "store access", "access to the store",
+    "shelving", "shelves", "bins", "labelling", "workload", "overtime", "backlog", "capacity",
     "Kgothatso", "Thelma",
 ]
 
@@ -43,6 +39,8 @@ def main():
     ap.add_argument("--keywords", default=None, help="text file, one keyword per line (default: built-in list)")
     ap.add_argument("--out", default="evidence")
     ap.add_argument("--no-msg", action="store_true", help="index only, do not save .msg copies")
+    ap.add_argument("--min-hits", type=int, default=2, help="distinct keywords a message must contain (default 2)")
+    ap.add_argument("--max", type=int, default=0, help="stop after this many matches (0 = no limit)")
     a = ap.parse_args()
 
     import pythoncom, win32com.client
@@ -85,6 +83,8 @@ def main():
             if safe_get(it, "Class", None) != 43:
                 continue
             n += 1
+            if n % 500 == 0:
+                print(f"  ... {n} scanned, {len(rows)} matched")
             subject = safe_get(it, "Subject")
             try:
                 body = it.Body or ""
@@ -94,7 +94,7 @@ def main():
             text = f"{subject}\n{body}"
             hits = sorted({m.group(0).lower() for m in rx.finditer(text)})
             entry_id = safe_get(it, "EntryID", None)
-            if not hits or not entry_id or entry_id in seen:
+            if len(hits) < a.min_hits or not entry_id or entry_id in seen:
                 continue
             seen.add(entry_id)
             when = safe_get(it, "ReceivedTime", None)
@@ -129,6 +129,8 @@ def main():
                          safe_get(it, "To"), safe_get(it, "CC"), subject, ", ".join(hits), att_count,
                          snippet, fname if not a.no_msg else ""])
         print(f"  {n} emails in window, {len(rows)} matches so far")
+        if a.max and len(rows) >= a.max:
+            print("  --max reached, stopping"); break
 
     rows.sort(key=lambda r: r[0])
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Index"
