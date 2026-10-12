@@ -62,7 +62,8 @@ def main():
     rx = re.compile("|".join(re.escape(k) for k in kws), re.I)
     since = datetime.strptime(a.since, "%Y-%m-%d")
     until = datetime.strptime(a.until, "%Y-%m-%d") if a.until else datetime.now()
-    out = Path(a.out); (out / "msg").mkdir(parents=True, exist_ok=True)
+    out = Path(a.out).resolve(); (out / "msg").mkdir(parents=True, exist_ok=True)
+    failed_saves = 0
 
     rows, seen = [], set()
     for folder in folders:
@@ -83,10 +84,23 @@ def main():
             seen.add(it.EntryID)
             when = it.ReceivedTime
             stamp = when.strftime("%Y-%m-%d_%H%M")
-            safe = re.sub(r"[^\w\- ]", "_", (it.Subject or "no subject"))[:60].strip()
+            safe = re.sub(r"[^A-Za-z0-9\- ]", "_", (it.Subject or "no subject")).strip(" ._")[:40] or "no_subject"
             fname = f"{stamp} {safe}.msg"
             if not a.no_msg:
-                it.SaveAs(str(out / "msg" / fname), 3)    # 3 = olMSG
+                target = out / "msg" / fname
+                try:
+                    it.SaveAs(str(target), 3)            # 3 = olMSG; needs an absolute path
+                except Exception:
+                    # Outlook refused (rights-managed mail, odd item, policy): keep the text instead
+                    fname = fname[:-4] + ".txt"
+                    try:
+                        (out / "msg" / fname).write_text(
+                            f"From: {it.SenderName}\nTo: {it.To}\nCC: {it.CC}\nDate: {it.ReceivedTime}\n"
+                            f"Subject: {it.Subject}\nAttachments: {it.Attachments.Count}\n\n{it.Body or ''}",
+                            encoding="utf-8")
+                    except Exception:
+                        fname = "(could not save)"
+                    failed_saves += 1
             body = re.sub(r"\s+", " ", it.Body or "")
             first = rx.search(body)
             snippet = body[max(0, first.start() - 150): first.start() + 250] if first else body[:300]
@@ -106,6 +120,8 @@ def main():
     path = out / f"evidence-index-{datetime.now():%Y%m%d-%H%M}.xlsx"
     wb.save(path)
     print(f"\n{len(rows)} matching emails. Index: {path}\nSaved copies: {out / 'msg'}")
+    if failed_saves:
+        print(f"{failed_saves} message(s) could not be saved as .msg and were saved as .txt instead")
 
 if __name__ == "__main__":
     main()
